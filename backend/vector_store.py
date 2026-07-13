@@ -26,15 +26,22 @@ class VectorStore:
         """
         self.persist_directory = persist_directory
         self.collection_name = collection_name
-        
+
+        # SentenceTransformer.encode() is not guaranteed thread-safe; serialize access
+        # since Flask can dispatch concurrent requests onto multiple threads
+        self._encode_lock = threading.Lock()
+
+        # Small LRU-ish cache for repeat query embeddings (chat UIs often re-ask/backtrack)
+        self._query_embedding_cache = EmbeddingCache(cache_size=256)
+
         # Initialize ChromaDB
         self.client = chromadb.PersistentClient(path=persist_directory)
-        
+
         # Initialize embedding model
         print("Loading embedding model...")
         self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
         print("✓ Embedding model loaded")
-        
+
         # Get or create collection
         try:
             self.collection = self.client.get_collection(name=collection_name)
@@ -45,6 +52,19 @@ class VectorStore:
                 metadata={"hnsw:space": "cosine"}
             )
             print(f"✓ Created new collection: {collection_name}")
+
+        # Running set of known sources, kept in sync on add/delete/clear so get_stats()
+        # doesn't have to (under)sample the collection to count unique sources
+        self._sources = self._load_existing_sources()
+
+    def _load_existing_sources(self) -> set:
+        """Scan the (possibly pre-existing, persisted) collection once at startup"""
+        count = self.collection.count()
+        if count == 0:
+            return set()
+
+        existing = self.collection.get(include=["metadatas"])
+        return {m.get('source', 'unknown') for m in existing['metadatas']}
     
     def add_documents(self, chunks: List[DocumentChunk]) -> int:
         """
@@ -67,12 +87,13 @@ class VectorStore:
         metadatas = [chunk.metadata for chunk in chunks]
         
         # Generate embeddings
-        embeddings = self.embedding_model.encode(
-            texts,
-            show_progress_bar=True,
-            convert_to_numpy=True
-        ).tolist()
-        
+        with self._encode_lock:
+            embeddings = self.embedding_model.encode(
+                texts,
+                show_progress_bar=True,
+                convert_to_numpy=True
+            ).tolist()
+
         # Add to collection
         self.collection.add(
             embeddings=embeddings,
@@ -80,7 +101,9 @@ class VectorStore:
             metadatas=metadatas,
             ids=ids
         )
-        
+
+        self._sources.update(m.get('source', 'unknown') for m in metadatas)
+
         print(f"✓ Added {len(chunks)} chunks to vector store")
         return len(chunks)
     
@@ -96,12 +119,19 @@ class VectorStore:
         Returns:
             List of search results with relevance scores
         """
-        # Generate query embedding
-        query_embedding = self.embedding_model.encode(
-            query,
-            convert_to_numpy=True
-        ).tolist()
-        
+        # Generate query embedding (cached, since chat UIs often repeat/backtrack queries)
+        cache_key = query.strip()
+        cached = self._query_embedding_cache.get(cache_key)
+        if cached is not None:
+            query_embedding = cached
+        else:
+            with self._encode_lock:
+                query_embedding = self.embedding_model.encode(
+                    query,
+                    convert_to_numpy=True
+                ).tolist()
+            self._query_embedding_cache.set(cache_key, query_embedding)
+
         # Search
         results = self.collection.query(
             query_embeddings=[query_embedding],
@@ -157,35 +187,29 @@ class VectorStore:
     def get_stats(self) -> Dict:
         """Get statistics about the vector store"""
         count = self.collection.count()
-        
-        # Get sample of metadata to find unique sources
-        if count > 0:
-            sample = self.collection.get(limit=min(100, count))
-            sources = set(m.get('source', 'unknown') for m in sample['metadatas'])
-        else:
-            sources = set()
-        
+
         return {
             'total_chunks': count,
-            'unique_sources': len(sources),
-            'sources': list(sources),
+            'unique_sources': len(self._sources),
+            'sources': list(self._sources),
             'collection_name': self.collection_name
         }
-    
+
     def delete_by_source(self, source: str) -> int:
         """Delete all chunks from a specific source"""
         # Get all IDs for this source
         results = self.collection.get(
             where={"source": source}
         )
-        
+
         if results['ids']:
             self.collection.delete(ids=results['ids'])
+            self._sources.discard(source)
             print(f"✓ Deleted {len(results['ids'])} chunks from {source}")
             return len(results['ids'])
-        
+
         return 0
-    
+
     def clear_all(self):
         """Clear all documents from the vector store"""
         self.client.delete_collection(name=self.collection_name)
@@ -193,6 +217,8 @@ class VectorStore:
             name=self.collection_name,
             metadata={"hnsw:space": "cosine"}
         )
+        self._sources = set()
+        self._query_embedding_cache.clear()
         print("✓ Cleared vector store")
     
     def get_similar_chunks(self, chunk_id: str, n_results: int = 3) -> List[Dict]:
@@ -208,24 +234,24 @@ class VectorStore:
 
 
 class EmbeddingCache:
-    """Cache for embeddings to avoid recomputation"""
-    
+    """Simple insertion-ordered cache for embeddings, to avoid recomputation"""
+
     def __init__(self, cache_size: int = 1000):
-        self.cache = {}
+        self.cache: Dict[str, List[float]] = {}
         self.cache_size = cache_size
-    
-    def get(self, text: str) -> Optional[np.ndarray]:
+
+    def get(self, text: str) -> Optional[List[float]]:
         """Get cached embedding"""
         return self.cache.get(text)
-    
-    def set(self, text: str, embedding: np.ndarray):
+
+    def set(self, text: str, embedding: List[float]):
         """Cache embedding"""
         if len(self.cache) >= self.cache_size:
             # Remove oldest entry
             self.cache.pop(next(iter(self.cache)))
-        
+
         self.cache[text] = embedding
-    
+
     def clear(self):
         """Clear cache"""
         self.cache.clear()
@@ -248,15 +274,16 @@ if __name__ == "__main__":
     Computer vision allows machines to interpret visual information.
     """
     
-    with open('/tmp/ai_sample.txt', 'w') as f:
+    sample_path = os.path.join(tempfile.gettempdir(), 'ai_sample.txt')
+    with open(sample_path, 'w') as f:
         f.write(sample_text)
-    
+
     # Process document
     processor = DocumentProcessor(chunk_size=200, chunk_overlap=50)
-    chunks = processor.process_file('/tmp/ai_sample.txt')
-    
+    chunks = processor.process_file(sample_path)
+
     # Create vector store and add documents
-    vector_store = VectorStore(persist_directory="/tmp/test_vector_db")
+    vector_store = VectorStore(persist_directory=os.path.join(tempfile.gettempdir(), "test_vector_db"))
     vector_store.add_documents(chunks)
     
     # Search
