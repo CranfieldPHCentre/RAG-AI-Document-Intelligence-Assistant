@@ -60,16 +60,26 @@ This advanced AI application demonstrates cutting-edge technologies in natural l
 
 ## 📂 Project Structure
 
-The backend (Flask JSON API) and frontend (static HTML/CSS/JS) are fully independent — each can be run, deployed, or replaced on its own.
+The backend (Flask JSON API) and frontend (static HTML/CSS/JS) are fully independent — each can be run, deployed, or replaced on its own. The backend is stateless: it keeps no per-user data in memory, so it scales horizontally without sticky sessions (see [Conversational Memory](#5-conversational-memory)).
 
 ```
 rag_assistant/
 ├── backend/
-│   ├── app.py                  # Flask JSON API & endpoints (CORS-enabled)
+│   ├── app.py                  # Flask app factory (create_app), logging, error handlers
+│   ├── wsgi.py                 # Production entrypoint (waitress-serve wsgi:app)
+│   ├── config.py               # Env-driven configuration
+│   ├── extensions.py           # Shared Flask extensions (Flask-Limiter)
+│   ├── services.py             # Shared component singletons (vector store, RAG engine, doc processor)
+│   ├── schemas.py               # Pydantic request validation (QueryRequest, DeleteDocumentRequest)
+│   ├── routes/
+│   │   ├── documents.py        # /api/upload, /api/stats, /api/delete_document, /api/clear_documents, /api/sample_questions
+│   │   └── query.py            # /api/query, /api/query/stream (SSE)
 │   ├── document_processor.py   # Multi-format document parsing & chunking
-│   ├── vector_store.py         # ChromaDB vector database management
-│   ├── rag_engine.py           # RAG orchestration & Claude integration
+│   ├── vector_store.py         # ChromaDB vector database management (thread-safe, cached embeddings)
+│   ├── rag_engine.py           # RAG orchestration & Claude integration (stateless)
+│   ├── tests/                  # pytest unit tests
 │   ├── requirements.txt        # Python dependencies
+│   ├── requirements-dev.txt    # + pytest, for running the test suite
 │   ├── .env.example            # Environment variables template
 │   ├── uploads/                # Uploaded documents (auto-created)
 │   └── vector_db/              # Vector database storage (auto-created)
@@ -78,7 +88,7 @@ rag_assistant/
 │   ├── css/
 │   │   └── style.css           # Modern, responsive styling
 │   └── js/
-│       └── script.js           # Frontend interactivity (calls backend API)
+│       └── script.js           # Frontend interactivity (calls backend API, keeps chat history client-side)
 └── README.md                   # This file
 ```
 
@@ -109,6 +119,8 @@ source venv/bin/activate
 3. **Install dependencies:**
 ```bash
 pip install -r requirements.txt
+# Or, to also run the test suite:
+pip install -r requirements-dev.txt
 ```
 
 4. **Set up environment variables:**
@@ -124,7 +136,7 @@ cp .env.example .env
 ```bash
 python app.py
 ```
-This starts the JSON API on `http://localhost:5000`.
+This starts the JSON API on `http://localhost:5000` (dev server, threaded, auto-reload). For production, see [Deployment Options](#-deployment-options).
 
 6. **Run the frontend (from `frontend/`, in a separate terminal):**
 ```bash
@@ -235,21 +247,22 @@ Every answer includes:
 - Text preview
 - Chunk position
 
-### 5. Conversational Memory
-The system remembers previous exchanges:
-- Follow-up questions work naturally
-- References to "it" or "that" understood
-- Context builds over conversation
+### 5. Conversational Memory (stateless)
+The backend keeps **no** per-user conversation state — it never mutates shared memory between requests, which is what lets it scale across multiple worker threads/processes without cross-user data ever bleeding together. Instead:
+- The frontend keeps the last few Q&A turns in memory (`conversationHistory` in `script.js`)
+- Each `/api/query` or `/api/query/stream` request sends that history in the `history` field
+- The server uses whatever history is sent for that single request, then forgets it
+- "Clear History" is a purely client-side action (clears the chat UI + the local history array)
 
 ## 🔧 Advanced Configuration
 
+Most settings are read from environment variables — see `backend/.env.example` and `backend/config.py` (chunk size/overlap, upload limits, rate limits, log level, frontend origin, max history turns).
+
 ### Adjust Chunk Size
-```python
-# In backend/app.py
-document_processor = DocumentProcessor(
-    chunk_size=1500,     # Larger chunks for more context
-    chunk_overlap=300    # More overlap for better continuity
-)
+```bash
+# In backend/.env
+CHUNK_SIZE=1500     # Larger chunks for more context
+CHUNK_OVERLAP=300   # More overlap for better continuity
 ```
 
 ### Change Embedding Model
@@ -270,25 +283,38 @@ response = self.client.messages.create(
 )
 ```
 
-## 📈 Performance Optimization
+## 📈 Performance & Scalability
+
+**Already built in:**
+- Stateless request handling (see [Conversational Memory](#5-conversational-memory-stateless)) — no sticky sessions needed to scale to multiple workers/instances
+- Query-embedding LRU cache in `VectorStore` (repeat/backtracked chat questions skip re-encoding)
+- A `threading.Lock` around `SentenceTransformer.encode()` so concurrent requests can't corrupt each other
+- O(1) `get_stats()` source counting (a running set, updated on add/delete/clear, instead of re-sampling the collection)
+- Streaming answers over SSE (`/api/query/stream`) so the UI shows tokens as they're generated instead of waiting for the full response
+- Flask-Limiter rate limits on `/api/upload` and `/api/query*` (tune via `UPLOAD_RATE_LIMIT`/`QUERY_RATE_LIMIT` in `.env`)
 
 **For Large Document Sets:**
-1. Use batch embedding generation
-2. Implement pagination for retrieval
-3. Add embedding cache
-4. Use approximate nearest neighbor search
+1. Use approximate nearest neighbor search (ChromaDB's HNSW index is already in use)
+2. Consider a managed/sharded vector DB if a single-node ChromaDB store outgrows disk/RAM
 
 **For Production:**
-1. Add Redis for session management
-2. Use PostgreSQL for metadata
-3. Implement rate limiting
-4. Add authentication
-5. Deploy with Gunicorn/NGINX
+1. Serve with `waitress` (see Deployment below) instead of the Flask dev server
+2. Use Flask-Limiter's Redis storage backend instead of in-memory (required once you run more than one worker process)
+3. Add authentication in front of the API if it's exposed beyond a trusted network
+4. Put NGINX (or similar) in front for TLS/compression
 
 ## 🚀 Deployment Options
 
 ### Local Development
 Already configured! Run the backend (`python backend/app.py`) and frontend (`python -m http.server 8080` from `frontend/`) separately.
+
+### Production (waitress)
+`waitress` is a pure-Python, cross-platform WSGI server (works on Windows, unlike gunicorn) and is included in `requirements.txt`:
+```bash
+cd backend
+waitress-serve --listen=0.0.0.0:5000 wsgi:app
+```
+`wsgi.py` exposes the app built by `create_app()` as `app`, so any WSGI-compatible server (gunicorn on Linux, uWSGI, etc.) can target `wsgi:app` the same way.
 
 ### Docker
 ```dockerfile
@@ -298,12 +324,12 @@ WORKDIR /app
 COPY backend/requirements.txt .
 RUN pip install -r requirements.txt
 COPY backend/ .
-CMD ["python", "app.py"]
+CMD ["waitress-serve", "--listen=0.0.0.0:5000", "wsgi:app"]
 ```
 The frontend/ directory can be served by any static file host (nginx, Netlify, S3, etc.) — it makes no assumptions about the backend's deployment.
 
 ### Cloud Platforms
-- **Heroku:** Add `Procfile` with `web: gunicorn app:app` in `backend/`
+- **Heroku:** Add `Procfile` with `web: waitress-serve --listen=0.0.0.0:$PORT wsgi:app` in `backend/`
 - **AWS:** Deploy the backend on ECS with a persistent volume for `vector_db`; host the frontend on S3/CloudFront
 - **Google Cloud:** Use Cloud Run for the backend and Cloud Storage/Firebase Hosting for the frontend
 
@@ -342,6 +368,14 @@ The frontend/ directory can be served by any static file host (nginx, Netlify, S
 
 ### ChromaDB errors
 **Solution:** Delete `backend/vector_db/` folder and restart
+
+### Running the test suite
+```bash
+cd backend
+pip install -r requirements-dev.txt
+pytest
+```
+Tests cover document chunking/cleaning, vector store add/search/delete/stats tracking, and the RAG engine's stateless query handling — no API key or network access required (they run in demo mode).
 
 ## 📚 Learning Resources
 

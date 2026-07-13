@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from config import Config
 from extensions import limiter
 from schemas import DeleteDocumentRequest
+import services
 
 logger = logging.getLogger(__name__)
 
@@ -54,13 +55,13 @@ def upload_file():
     file.save(filepath)
 
     try:
-        chunks = current_app.document_processor.process_file(filepath)
+        chunks = services.document_processor.process_file(filepath)
 
         if not chunks:
             return _cleanup_and_error(filepath, 'No text could be extracted from the document')
 
-        num_added = current_app.vector_store.add_documents(chunks)
-        doc_stats = current_app.document_processor.get_document_stats(chunks)
+        num_added = services.vector_store.add_documents(chunks)
+        doc_stats = services.document_processor.get_document_stats(chunks)
 
         return jsonify({
             'success': True,
@@ -77,8 +78,8 @@ def upload_file():
 @documents_bp.route('/stats')
 def get_stats():
     """Get vector store statistics"""
-    stats = current_app.vector_store.get_stats()
-    stats['has_api'] = current_app.rag_engine.has_api
+    stats = services.vector_store.get_stats()
+    stats['has_api'] = services.rag_engine.has_api
     return jsonify(stats)
 
 
@@ -86,7 +87,7 @@ def get_stats():
 def clear_documents():
     """Clear all documents from vector store"""
     try:
-        current_app.vector_store.clear_all()
+        services.vector_store.clear_all()
 
         upload_folder = current_app.config['UPLOAD_FOLDER']
         for filename in os.listdir(upload_folder):
@@ -113,7 +114,7 @@ def delete_document():
         return jsonify({'error': e.errors()[0]['msg'] if e.errors() else str(e)}), 400
 
     try:
-        deleted_count = current_app.vector_store.delete_by_source(payload.source)
+        deleted_count = services.vector_store.delete_by_source(payload.source)
 
         return jsonify({
             'success': True,
@@ -129,7 +130,7 @@ def delete_document():
 @documents_bp.route('/sample_questions')
 def get_sample_questions():
     """Get sample questions based on uploaded documents"""
-    stats = current_app.vector_store.get_stats()
+    stats = services.vector_store.get_stats()
 
     if stats['total_chunks'] == 0:
         return jsonify([

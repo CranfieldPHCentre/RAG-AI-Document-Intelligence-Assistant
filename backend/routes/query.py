@@ -6,12 +6,13 @@ import json
 import logging
 from typing import List, Dict, Optional
 
-from flask import Blueprint, request, jsonify, current_app, Response, stream_with_context
+from flask import Blueprint, request, jsonify, Response, stream_with_context
 from pydantic import ValidationError
 
 from config import Config
 from extensions import limiter
 from schemas import QueryRequest
+import services
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +42,12 @@ def query():
     except ValidationError as e:
         return jsonify({'error': e.errors()[0]['msg'] if e.errors() else str(e)}), 400
 
-    stats = current_app.vector_store.get_stats()
+    stats = services.vector_store.get_stats()
     if stats['total_chunks'] == 0:
         return _no_documents_response()
 
     try:
-        result = current_app.rag_engine.query(
+        result = services.rag_engine.query(
             question=payload.question,
             n_results=payload.n_results,
             use_hybrid=payload.use_hybrid,
@@ -67,11 +68,11 @@ def query_stream():
     except ValidationError as e:
         return jsonify({'error': e.errors()[0]['msg'] if e.errors() else str(e)}), 400
 
-    stats = current_app.vector_store.get_stats()
+    stats = services.vector_store.get_stats()
     if stats['total_chunks'] == 0:
         return _no_documents_response()
 
-    rag_engine = current_app.rag_engine
+    rag_engine = services.rag_engine
     history = _history_for(payload)
 
     def generate():
