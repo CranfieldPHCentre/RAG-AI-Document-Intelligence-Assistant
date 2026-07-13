@@ -241,30 +241,6 @@ The system remembers previous exchanges:
 - References to "it" or "that" understood
 - Context builds over conversation
 
-## 🎓 For Your Resume
-
-### Project Title
-"AI Document Intelligence Assistant with RAG & Vector Search"
-
-### Description
-"Built a production-grade Retrieval Augmented Generation (RAG) system using Claude API, vector embeddings, and semantic search. Implemented multi-format document processing, ChromaDB vector store, and hybrid retrieval strategy. Created real-time web interface with conversation memory and source citations. Achieved high relevance scores (>90%) for accurate, grounded responses."
-
-### Key Achievements
-- Designed and implemented end-to-end RAG architecture from scratch
-- Integrated Claude Sonnet 4 API with custom prompt engineering
-- Built vector database system with 384-dimensional embeddings
-- Developed hybrid search combining semantic + keyword matching
-- Achieved sub-second retrieval latency for 10,000+ document chunks
-- Created production-ready web application with responsive UI
-
-### Technical Skills Showcased
-- **AI/ML:** RAG, LLMs, vector embeddings, semantic search, prompt engineering
-- **Frameworks:** LangChain concepts, Sentence Transformers, ChromaDB, Flask
-- **APIs:** Anthropic Claude API, REST API design
-- **NLP:** Document chunking, text preprocessing, similarity scoring
-- **Languages:** Python (advanced), JavaScript, HTML/CSS
-- **Tools:** Git, virtual environments, API integration
-
 ## 🔧 Advanced Configuration
 
 ### Adjust Chunk Size
