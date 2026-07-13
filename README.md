@@ -60,24 +60,26 @@ This advanced AI application demonstrates cutting-edge technologies in natural l
 
 ## 📂 Project Structure
 
+The backend (Flask JSON API) and frontend (static HTML/CSS/JS) are fully independent — each can be run, deployed, or replaced on its own.
+
 ```
 rag_assistant/
-├── app.py                      # Flask application & API endpoints
-├── document_processor.py       # Multi-format document parsing & chunking
-├── vector_store.py            # ChromaDB vector database management
-├── rag_engine.py              # RAG orchestration & Claude integration
-├── requirements.txt           # Python dependencies
-├── .env.example              # Environment variables template
-├── README.md                 # This file
-├── uploads/                  # Uploaded documents (auto-created)
-├── vector_db/               # Vector database storage (auto-created)
-├── static/
+├── backend/
+│   ├── app.py                  # Flask JSON API & endpoints (CORS-enabled)
+│   ├── document_processor.py   # Multi-format document parsing & chunking
+│   ├── vector_store.py         # ChromaDB vector database management
+│   ├── rag_engine.py           # RAG orchestration & Claude integration
+│   ├── requirements.txt        # Python dependencies
+│   ├── .env.example            # Environment variables template
+│   ├── uploads/                # Uploaded documents (auto-created)
+│   └── vector_db/              # Vector database storage (auto-created)
+├── frontend/
+│   ├── index.html              # Main web interface
 │   ├── css/
-│   │   └── style.css        # Modern, responsive styling
+│   │   └── style.css           # Modern, responsive styling
 │   └── js/
-│       └── script.js        # Frontend interactivity
-└── templates/
-    └── index.html           # Main web interface
+│       └── script.js           # Frontend interactivity (calls backend API)
+└── README.md                   # This file
 ```
 
 ## 🚀 Installation & Setup
@@ -88,9 +90,9 @@ rag_assistant/
 
 ### Step-by-Step Installation
 
-1. **Navigate to project directory:**
+1. **Navigate to the backend directory:**
 ```bash
-cd rag_assistant
+cd rag_assistant/backend
 ```
 
 2. **Create virtual environment:**
@@ -118,13 +120,22 @@ cp .env.example .env
 # ANTHROPIC_API_KEY=your_actual_api_key_here
 ```
 
-5. **Run the application:**
+5. **Run the backend API (from `backend/`):**
 ```bash
 python app.py
 ```
+This starts the JSON API on `http://localhost:5000`.
 
-6. **Open your browser:**
-Navigate to `http://localhost:5000`
+6. **Run the frontend (from `frontend/`, in a separate terminal):**
+```bash
+cd ../frontend
+python -m http.server 8080
+```
+
+7. **Open your browser:**
+Navigate to `http://localhost:8080`
+
+> The backend only allows requests from the origin set in `FRONTEND_ORIGIN` (default `http://localhost:8080`). If you serve the frontend from a different port, set `FRONTEND_ORIGIN` in `backend/.env` to match.
 
 ## 💻 How to Use
 
@@ -258,7 +269,7 @@ The system remembers previous exchanges:
 
 ### Adjust Chunk Size
 ```python
-# In app.py
+# In backend/app.py
 document_processor = DocumentProcessor(
     chunk_size=1500,     # Larger chunks for more context
     chunk_overlap=300    # More overlap for better continuity
@@ -267,13 +278,13 @@ document_processor = DocumentProcessor(
 
 ### Change Embedding Model
 ```python
-# In vector_store.py
+# In backend/vector_store.py
 self.embedding_model = SentenceTransformer('all-mpnet-base-v2')  # Higher quality
 ```
 
 ### Modify Claude Parameters
 ```python
-# In rag_engine.py
+# In backend/rag_engine.py
 response = self.client.messages.create(
     model="claude-sonnet-4-20250514",
     max_tokens=2000,     # Longer answers
@@ -301,22 +312,24 @@ response = self.client.messages.create(
 ## 🚀 Deployment Options
 
 ### Local Development
-Already configured! Just run `python app.py`
+Already configured! Run the backend (`python backend/app.py`) and frontend (`python -m http.server 8080` from `frontend/`) separately.
 
 ### Docker
 ```dockerfile
+# Backend
 FROM python:3.9-slim
 WORKDIR /app
-COPY requirements.txt .
+COPY backend/requirements.txt .
 RUN pip install -r requirements.txt
-COPY . .
+COPY backend/ .
 CMD ["python", "app.py"]
 ```
+The frontend/ directory can be served by any static file host (nginx, Netlify, S3, etc.) — it makes no assumptions about the backend's deployment.
 
 ### Cloud Platforms
-- **Heroku:** Add `Procfile` with `web: gunicorn app:app`
-- **AWS:** Deploy on ECS with persistent volume for vector_db
-- **Google Cloud:** Use Cloud Run with Cloud Storage
+- **Heroku:** Add `Procfile` with `web: gunicorn app:app` in `backend/`
+- **AWS:** Deploy the backend on ECS with a persistent volume for `vector_db`; host the frontend on S3/CloudFront
+- **Google Cloud:** Use Cloud Run for the backend and Cloud Storage/Firebase Hosting for the frontend
 
 ## ⚠️ Important Notes
 
@@ -326,8 +339,8 @@ CMD ["python", "app.py"]
 - Free tier includes generous credits
 
 ### Document Privacy
-- Documents stored locally in `uploads/` folder
-- Vector embeddings stored in `vector_db/` directory
+- Documents stored locally in `backend/uploads/` folder
+- Vector embeddings stored in `backend/vector_db/` directory
 - No data sent to external services except Claude API queries
 
 ### Limitations
@@ -338,7 +351,10 @@ CMD ["python", "app.py"]
 ## 🐛 Troubleshooting
 
 ### "No API key found"
-**Solution:** Create `.env` file and add `ANTHROPIC_API_KEY=your_key`
+**Solution:** Create `backend/.env` file and add `ANTHROPIC_API_KEY=your_key`
+
+### Frontend can't reach the API / CORS errors in browser console
+**Solution:** Make sure the backend is running on `http://localhost:5000` and that `FRONTEND_ORIGIN` in `backend/.env` matches the URL you're serving the frontend from.
 
 ### Slow embedding generation
 **Normal:** First-time model download takes ~500MB
@@ -349,7 +365,7 @@ CMD ["python", "app.py"]
 **Optional:** Install torch with CUDA for GPU acceleration
 
 ### ChromaDB errors
-**Solution:** Delete `vector_db/` folder and restart
+**Solution:** Delete `backend/vector_db/` folder and restart
 
 ## 📚 Learning Resources
 
