@@ -4,6 +4,8 @@ Manages embeddings and semantic search using ChromaDB
 """
 
 import os
+import tempfile
+import threading
 from typing import List, Dict, Optional
 import chromadb
 from sentence_transformers import SentenceTransformer
