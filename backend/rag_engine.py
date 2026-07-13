@@ -4,24 +4,32 @@ Orchestrates retrieval and generation using Claude API
 """
 
 import os
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Iterator
 import anthropic
 from vector_store import VectorStore
 
+CLAUDE_MODEL = "claude-sonnet-4-20250514"
+MAX_HISTORY_TURNS_FOR_PROMPT = 3
+
 
 class RAGEngine:
-    """RAG system combining retrieval with Claude API for generation"""
-    
+    """RAG system combining retrieval with Claude API for generation.
+
+    Stateless: callers pass their own conversation `history` per request instead
+    of the engine keeping global state, so it scales across concurrent users/processes
+    without per-user history bleeding between requests.
+    """
+
     def __init__(self, vector_store: VectorStore, api_key: Optional[str] = None):
         """
         Initialize RAG engine
-        
+
         Args:
             vector_store: VectorStore instance
             api_key: Anthropic API key (or set ANTHROPIC_API_KEY env var)
         """
         self.vector_store = vector_store
-        
+
         # Initialize Claude client
         self.api_key = api_key or os.environ.get('ANTHROPIC_API_KEY')
         if self.api_key:
@@ -32,23 +40,22 @@ class RAGEngine:
             self.client = None
             self.has_api = False
             print("⚠ No API key found - running in demo mode")
-        
-        self.conversation_history = []
-    
-    def query(self, 
-              question: str, 
+
+    def query(self,
+              question: str,
               n_results: int = 5,
               use_hybrid: bool = True,
-              conversation_context: bool = True) -> Dict:
+              history: Optional[List[Dict]] = None) -> Dict:
         """
         Query the RAG system
-        
+
         Args:
             question: User question
             n_results: Number of relevant chunks to retrieve
             use_hybrid: Use hybrid search (semantic + keyword)
-            conversation_context: Include conversation history
-            
+            history: Prior {question, answer} turns supplied by the caller, used for
+                     conversational context (the engine itself keeps no state)
+
         Returns:
             Dict with answer, sources, and metadata
         """
@@ -57,7 +64,7 @@ class RAGEngine:
             relevant_chunks = self.vector_store.hybrid_search(question, n_results=n_results)
         else:
             relevant_chunks = self.vector_store.search(question, n_results=n_results)
-        
+
         if not relevant_chunks:
             return {
                 'answer': "I couldn't find any relevant information in the documents to answer your question.",
@@ -65,27 +72,19 @@ class RAGEngine:
                 'retrieved_chunks': 0,
                 'model': 'none'
             }
-        
+
         # Step 2: Construct context from retrieved chunks
         context = self._build_context(relevant_chunks)
-        
+
         # Step 3: Generate answer using Claude
         if self.has_api:
-            answer = self._generate_with_claude(question, context, conversation_context)
-            model = "claude-sonnet-4-20250514"
+            answer = self._generate_with_claude(question, context, history)
+            model = CLAUDE_MODEL
         else:
             answer = self._generate_demo_answer(question, relevant_chunks)
             model = "demo"
-        
-        # Step 4: Add to conversation history
-        if conversation_context:
-            self.conversation_history.append({
-                'question': question,
-                'answer': answer,
-                'sources': [chunk['metadata']['source'] for chunk in relevant_chunks]
-            })
-        
-        # Step 5: Format response
+
+        # Step 4: Format response
         return {
             'answer': answer,
             'sources': self._format_sources(relevant_chunks),
@@ -93,6 +92,62 @@ class RAGEngine:
             'model': model,
             'relevance_scores': [chunk['relevance_score'] for chunk in relevant_chunks]
         }
+
+    def query_stream(self,
+                      question: str,
+                      n_results: int = 5,
+                      use_hybrid: bool = True,
+                      history: Optional[List[Dict]] = None) -> Iterator[Dict]:
+        """
+        Same as query(), but yields incremental events so the caller can stream the
+        answer to the client as it's generated instead of waiting for the full response:
+          {'type': 'sources', 'sources': [...], 'retrieved_chunks': int, 'relevance_scores': [...], 'model': str}
+          {'type': 'delta', 'text': str}            (one or more)
+          {'type': 'done'} | {'type': 'error', 'message': str}
+        """
+        if use_hybrid:
+            relevant_chunks = self.vector_store.hybrid_search(question, n_results=n_results)
+        else:
+            relevant_chunks = self.vector_store.search(question, n_results=n_results)
+
+        if not relevant_chunks:
+            yield {
+                'type': 'sources', 'sources': [], 'retrieved_chunks': 0,
+                'relevance_scores': [], 'model': 'none'
+            }
+            yield {'type': 'delta', 'text': "I couldn't find any relevant information in the documents to answer your question."}
+            yield {'type': 'done'}
+            return
+
+        context = self._build_context(relevant_chunks)
+        model = CLAUDE_MODEL if self.has_api else "demo"
+
+        yield {
+            'type': 'sources',
+            'sources': self._format_sources(relevant_chunks),
+            'retrieved_chunks': len(relevant_chunks),
+            'relevance_scores': [chunk['relevance_score'] for chunk in relevant_chunks],
+            'model': model
+        }
+
+        if not self.has_api:
+            yield {'type': 'delta', 'text': self._generate_demo_answer(question, relevant_chunks)}
+            yield {'type': 'done'}
+            return
+
+        try:
+            messages = self._build_messages(question, context, history)
+            with self.client.messages.stream(
+                model=CLAUDE_MODEL,
+                max_tokens=1500,
+                system=self._system_prompt(),
+                messages=messages
+            ) as stream:
+                for text in stream.text_stream:
+                    yield {'type': 'delta', 'text': text}
+            yield {'type': 'done'}
+        except Exception as e:
+            yield {'type': 'error', 'message': str(e)}
     
     def _build_context(self, chunks: List[Dict]) -> str:
         """Build context string from retrieved chunks"""
@@ -109,11 +164,8 @@ class RAGEngine:
         
         return "\n".join(context_parts)
     
-    def _generate_with_claude(self, question: str, context: str, use_history: bool) -> str:
-        """Generate answer using Claude API"""
-        
-        # Build system prompt
-        system_prompt = """You are a helpful AI assistant that answers questions based on provided documents.
+    def _system_prompt(self) -> str:
+        return """You are a helpful AI assistant that answers questions based on provided documents.
 
 INSTRUCTIONS:
 1. Answer the question using ONLY the information from the provided context
@@ -123,7 +175,8 @@ INSTRUCTIONS:
 5. If multiple sources provide relevant information, synthesize them
 6. Do not make up information not present in the context"""
 
-        # Build user message
+    def _build_messages(self, question: str, context: str, history: Optional[List[Dict]]) -> List[Dict]:
+        """Build the Claude messages list from caller-supplied history plus the current turn"""
         user_message = f"""Context from documents:
 {context}
 
@@ -131,37 +184,29 @@ Question: {question}
 
 Please answer the question based on the context above. Cite your sources."""
 
-        # Add conversation history if requested
         messages = []
-        if use_history and self.conversation_history:
-            # Add last 3 exchanges for context
-            for exchange in self.conversation_history[-3:]:
-                messages.append({
-                    "role": "user",
-                    "content": exchange['question']
-                })
-                messages.append({
-                    "role": "assistant",
-                    "content": exchange['answer']
-                })
-        
-        # Add current question
-        messages.append({
-            "role": "user",
-            "content": user_message
-        })
-        
+        if history:
+            for exchange in history[-MAX_HISTORY_TURNS_FOR_PROMPT:]:
+                messages.append({"role": "user", "content": exchange['question']})
+                messages.append({"role": "assistant", "content": exchange['answer']})
+
+        messages.append({"role": "user", "content": user_message})
+        return messages
+
+    def _generate_with_claude(self, question: str, context: str, history: Optional[List[Dict]]) -> str:
+        """Generate answer using Claude API"""
+        messages = self._build_messages(question, context, history)
+
         try:
-            # Call Claude API
             response = self.client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model=CLAUDE_MODEL,
                 max_tokens=1500,
-                system=system_prompt,
+                system=self._system_prompt(),
                 messages=messages
             )
-            
+
             return response.content[0].text
-            
+
         except Exception as e:
             return f"Error generating response: {str(e)}"
     
@@ -203,24 +248,6 @@ Please answer the question based on the context above. Cite your sources."""
             })
         
         return sources
-    
-    def clear_history(self):
-        """Clear conversation history"""
-        self.conversation_history = []
-        print("✓ Conversation history cleared")
-    
-    def get_conversation_summary(self) -> str:
-        """Get a summary of the conversation"""
-        if not self.conversation_history:
-            return "No conversation history"
-        
-        summary = f"Conversation History ({len(self.conversation_history)} exchanges):\n\n"
-        
-        for i, exchange in enumerate(self.conversation_history, 1):
-            summary += f"{i}. Q: {exchange['question'][:80]}...\n"
-            summary += f"   Sources: {', '.join(set(exchange['sources']))}\n\n"
-        
-        return summary
 
 
 class PromptTemplates:
@@ -256,8 +283,9 @@ Provide the information in a structured format."""
 
 if __name__ == "__main__":
     # Example usage
+    import tempfile
     from document_processor import DocumentProcessor
-    
+
     print("="*60)
     print("RAG Engine Example")
     print("="*60)
@@ -278,14 +306,15 @@ if __name__ == "__main__":
     These tools make it easier to build and deploy machine learning models.
     """
     
-    with open('/tmp/ml_doc.txt', 'w') as f:
+    sample_path = os.path.join(tempfile.gettempdir(), 'ml_doc.txt')
+    with open(sample_path, 'w') as f:
         f.write(sample_text)
-    
+
     # Process and store document
     processor = DocumentProcessor(chunk_size=300, chunk_overlap=50)
-    chunks = processor.process_file('/tmp/ml_doc.txt')
-    
-    vector_store = VectorStore(persist_directory="/tmp/rag_demo_db")
+    chunks = processor.process_file(sample_path)
+
+    vector_store = VectorStore(persist_directory=os.path.join(tempfile.gettempdir(), "rag_demo_db"))
     vector_store.add_documents(chunks)
     
     # Initialize RAG engine (without API key for demo)
