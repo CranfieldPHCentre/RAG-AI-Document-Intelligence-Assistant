@@ -406,3 +406,7 @@ Tests cover document chunking/cleaning, vector store add/search/delete/stats tra
 - Audit logging
 - SSO authentication
 - Role-based access control
+
+## 📄 License
+
+Licensed under the [Apache License 2.0](LICENSE).
