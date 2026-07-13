@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Document Intelligence Assistant</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <h1>🤖 AI Document Intelligence Assistant</h1>
+                <p class="subtitle">RAG-Powered Q&A with Vector Search & Claude AI</p>
+                <div class="api-status" id="apiStatus"></div>
+            </div>
+        </header>
+
+        <!-- Main Grid -->
+        <div class="main-grid">
+            <!-- Left Panel: Document Management -->
+            <aside class="side-panel">
+                <div class="card">
+                    <h2>📁 Document Library</h2>
+                    
+                    <!-- Upload Section -->
+                    <div class="upload-section">
+                        <label for="fileInput" class="upload-label">
+                            <div class="upload-icon">📄</div>
+                            <div>Click to upload or drag & drop</div>
+                            <div class="upload-hint">PDF, DOCX, TXT, MD (Max 10MB)</div>
+                        </label>
+                        <input type="file" 
+                               id="fileInput" 
+                               accept=".pdf,.docx,.txt,.md" 
+                               style="display: none;">
+                    </div>
+                    
+                    <!-- Upload Progress -->
+                    <div class="upload-progress" id="uploadProgress" style="display: none;">
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="progressFill"></div>
+                        </div>
+                        <div class="progress-text" id="progressText">Processing...</div>
+                    </div>
+                    
+                    <!-- Document Stats -->
+                    <div class="stats-box">
+                        <div class="stat-item">
+                            <div class="stat-value" id="totalChunks">0</div>
+                            <div class="stat-label">Total Chunks</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="totalDocs">0</div>
+                            <div class="stat-label">Documents</div>
+                        </div>
+                    </div>
+                    
+                    <!-- Document List -->
+                    <div class="document-list" id="documentList">
+                        <div class="empty-state">
+                            <p>No documents yet</p>
+                            <p class="empty-hint">Upload your first document to get started</p>
+                        </div>
+                    </div>
+                    
+                    <!-- Actions -->
+                    <div class="panel-actions">
+                        <button class="btn btn-secondary" onclick="clearHistory()">
+                            Clear History
+                        </button>
+                        <button class="btn btn-danger" onclick="clearAllDocuments()">
+                            Clear All
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Settings Card -->
+                <div class="card">
+                    <h2>⚙️ Settings</h2>
+                    <div class="setting-item">
+                        <label>
+                            <input type="checkbox" id="hybridSearch" checked>
+                            Hybrid Search (Semantic + Keyword)
+                        </label>
+                    </div>
+                    <div class="setting-item">
+                        <label>
+                            <input type="checkbox" id="conversationContext" checked>
+                            Use Conversation Context
+                        </label>
+                    </div>
+                    <div class="setting-item">
+                        <label for="numResults">Results to Retrieve:</label>
+                        <input type="range" id="numResults" min="3" max="10" value="5">
+                        <span id="numResultsValue">5</span>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Center Panel: Chat Interface -->
+            <main class="chat-panel">
+                <div class="card chat-card">
+                    <!-- Chat Messages -->
+                    <div class="chat-messages" id="chatMessages">
+                        <div class="welcome-message">
+                            <div class="welcome-icon">🎯</div>
+                            <h3>Welcome to Your AI Document Assistant!</h3>
+                            <p>Upload documents and ask questions about their content.</p>
+                            <div class="features">
+                                <div class="feature-item">
+                                    <span class="feature-icon">🔍</span>
+                                    <span>Semantic Search</span>
+                                </div>
+                                <div class="feature-item">
+                                    <span class="feature-icon">🧠</span>
+                                    <span>Vector Embeddings</span>
+                                </div>
+                                <div class="feature-item">
+                                    <span class="feature-icon">💬</span>
+                                    <span>Conversational AI</span>
+                                </div>
+                                <div class="feature-item">
+                                    <span class="feature-icon">📚</span>
+                                    <span>Source Citations</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Input Area -->
+                    <div class="chat-input-area">
+                        <div class="sample-questions" id="sampleQuestions"></div>
+                        <div class="input-container">
+                            <textarea 
+                                id="questionInput" 
+                                placeholder="Ask a question about your documents..."
+                                rows="1"></textarea>
+                            <button class="btn-send" id="sendButton" onclick="askQuestion()">
+                                <span class="send-icon">➤</span>
+                            </button>
+                        </div>
+                        <div class="input-hint">
+                            Press Enter to send, Shift+Enter for new line
+                        </div>
+                    </div>
+                </div>
+            </main>
+
+            <!-- Right Panel: Context & Sources -->
+            <aside class="side-panel">
+                <div class="card">
+                    <h2>📊 Query Context</h2>
+                    <div class="context-info" id="contextInfo">
+                        <div class="info-item">
+                            <span class="info-label">Retrieved Chunks:</span>
+                            <span class="info-value" id="retrievedChunks">-</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Model Used:</span>
+                            <span class="info-value" id="modelUsed">-</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Avg Relevance:</span>
+                            <span class="info-value" id="avgRelevance">-</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <h2>📚 Sources</h2>
+                    <div class="sources-list" id="sourcesList">
+                        <div class="empty-state">
+                            <p>No sources yet</p>
+                            <p class="empty-hint">Sources will appear after asking a question</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card api-notice" id="apiNotice" style="display: none;">
+                    <h3>⚠️ Demo Mode Active</h3>
+                    <p>To enable full Claude AI capabilities:</p>
+                    <ol>
+                        <li>Get an API key from <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a></li>
+                        <li>Create a <code>.env</code> file in <code>backend/</code></li>
+                        <li>Add: <code>ANTHROPIC_API_KEY=your_key</code></li>
+                        <li>Restart the backend</li>
+                    </ol>
+                </div>
+            </aside>
+        </div>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div id="toast" class="toast"></div>
+
+    <script src="js/script.js"></script>
+</body>
+</html>
