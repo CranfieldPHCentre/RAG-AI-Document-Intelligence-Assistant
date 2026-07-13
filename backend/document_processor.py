@@ -5,6 +5,7 @@ Handles multiple document formats and prepares text for vector embeddings
 
 import os
 import re
+import tempfile
 from typing import List, Dict, Tuple
 import hashlib
 from datetime import datetime
@@ -204,9 +205,9 @@ class DocumentProcessor:
         # Remove special characters that might cause issues
         text = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f-\x9f]', '', text)
         
-        # Normalize quotes
-        text = text.replace('"', '"').replace('"', '"')
-        text = text.replace(''', "'").replace(''', "'")
+        # Normalize smart/curly quotes to their straight ASCII equivalents
+        text = text.replace('“', '"').replace('”', '"')
+        text = text.replace('‘', "'").replace('’', "'")
         
         return text.strip()
     
@@ -270,10 +271,11 @@ if __name__ == "__main__":
     This helps with citation and context preservation during retrieval.
     """
     
-    with open('/tmp/sample.txt', 'w') as f:
+    sample_path = os.path.join(tempfile.gettempdir(), 'sample.txt')
+    with open(sample_path, 'w') as f:
         f.write(sample_text)
-    
-    chunks = processor.process_file('/tmp/sample.txt')
+
+    chunks = processor.process_file(sample_path)
     stats = processor.get_document_stats(chunks)
     
     print("\nDocument Statistics:")
