@@ -78,14 +78,15 @@ def upload_file():
         
         file = request.files['file']
         
-        if file.filename == '':
+        if not file.filename:
             return jsonify({'error': 'No file selected'}), 400
         
         if not allowed_file(file.filename):
             return jsonify({'error': f'File type not supported. Allowed: {", ".join(ALLOWED_EXTENSIONS)}'}), 400
         
         # Save file
-        filename = secure_filename(file.filename)
+        # file.filename may be Optional[str]; ensure a str is passed to secure_filename
+        filename = secure_filename(file.filename or '')
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         unique_filename = f"{timestamp}_{filename}"
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
